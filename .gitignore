@@ -1,0 +1,37 @@
+# ========================================
+# Root .gitignore for Java + JavaScript
+# ========================================
+
+# --- Java / Maven ---
+backend/target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+
+# --- Maven Wrapper ---
+!backend/.mvn/wrapper/maven-wrapper.jar
+
+# --- JavaScript / Node ---
+frontend/node_modules/
+frontend/dist/
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Environment ---
+.env
+.env.local
+.env.*.local
