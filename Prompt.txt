@@ -1,0 +1,5 @@
+Build a local RAG project based on Spring Boot and Vue 3. The RAG pipeline must follow this sequence: “Ingestion -> Chunking -> Embedding -> Indexing -> User Query -> Query Embedding -> Top k Retrieval -> Reranking -> Prompt Construction -> LLM Generation”.
+
+The large language model should be accessed through API interfaces, with the interface documentation based on the SiliconFlow API manual. The web interface needs to support switching the large models used at different stages, use JSON to store preselected suitable APIs, and also allow users to provide model names themselves.
+
+This RAG system should be specifically optimized for analyzing character relationships in long-form novels, so that the large model can understand complex interpersonal relationships and character life histories.
