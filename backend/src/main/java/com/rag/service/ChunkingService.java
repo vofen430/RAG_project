@@ -1,37 +1,35 @@
 package com.rag.service;
 
-import com.rag.model.DocumentChunk;
-import org.springframework.beans.factory.annotation.Value;
+import com.rag.entity.DocumentChunkEntity;
 import org.springframework.stereotype.Service;
 
+import java.security.MessageDigest;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Refactored chunking service producing DocumentChunkEntity objects for DB persistence.
+ * Preserves the existing paragraph-aware splitting logic.
+ */
 @Service
 public class ChunkingService {
 
-    @Value("${rag.chunk-size}")
-    private int chunkSize;
-
-    @Value("${rag.chunk-overlap}")
-    private int chunkOverlap;
-
     // Pattern to match act/scene markers in Chinese plays
     private static final Pattern ACT_PATTERN = Pattern.compile("(第[一二三四五六七八九十百千万\\d]+幕)");
-    private static final Pattern SCENE_PATTERN = Pattern.compile("(第[一二三四五六七八九十百千万\\d]+场)");
 
     /**
-     * Novel-aware chunking optimized for Chinese literary works.
-     * Strategy: split by acts first, then by fixed-size overlapping chunks.
+     * Chunk a document text into persistent chunk entities.
      */
-    public List<DocumentChunk> chunkDocument(String documentId, String text) {
-        List<DocumentChunk> chunks = new ArrayList<>();
-
-        // First, split by acts/scenes
+    public List<DocumentChunkEntity> chunkDocument(String documentId, String text,
+                                                    int chunkSize, int chunkOverlap,
+                                                    String embeddingModel) {
+        List<DocumentChunkEntity> chunks = new ArrayList<>();
         List<String> sections = splitByStructure(text);
 
         int chunkIndex = 0;
+        int globalOffset = 0;
+
         for (int secIdx = 0; secIdx < sections.size(); secIdx++) {
             String section = sections.get(secIdx);
             String sectionLabel = "Section " + (secIdx + 1);
@@ -42,33 +40,42 @@ public class ChunkingService {
                 sectionLabel = actMatcher.group(1);
             }
 
-            // Sub-chunk each section with overlapping windows
-            List<String> subChunks = fixedSizeChunk(section, chunkSize, chunkOverlap);
+            // Find the start offset of this section in the original text
+            int sectionStartInText = text.indexOf(section, globalOffset);
+            if (sectionStartInText < 0) sectionStartInText = globalOffset;
 
-            for (String subChunk : subChunks) {
-                String trimmed = subChunk.trim();
+            // Sub-chunk each section with overlapping windows
+            List<SubChunk> subChunks = fixedSizeChunk(section, chunkSize, chunkOverlap);
+
+            for (SubChunk subChunk : subChunks) {
+                String trimmed = subChunk.text.trim();
                 if (trimmed.isEmpty()) continue;
 
-                Map<String, String> metadata = new LinkedHashMap<>();
-                metadata.put("section", sectionLabel);
-                metadata.put("characters", extractCharacterNames(trimmed));
+                DocumentChunkEntity entity = new DocumentChunkEntity();
+                entity.setId(UUID.randomUUID().toString());
+                entity.setDocumentId(documentId);
+                entity.setChunkIndex(chunkIndex);
+                entity.setSectionLabel(sectionLabel);
+                entity.setContentText(trimmed);
+                entity.setContentSummary(trimmed.length() > 100 ? trimmed.substring(0, 100) + "..." : trimmed);
+                entity.setStartOffset(sectionStartInText + subChunk.startOffset);
+                entity.setEndOffset(sectionStartInText + subChunk.endOffset);
+                entity.setEntityList(buildEntityList(trimmed));
+                entity.setEmbeddingModel(embeddingModel);
+                entity.setContentHash(computeHash(trimmed));
 
-                String chunkId = documentId + "_chunk_" + chunkIndex;
-                chunks.add(new DocumentChunk(chunkId, documentId, trimmed, chunkIndex, metadata));
+                chunks.add(entity);
                 chunkIndex++;
             }
+
+            globalOffset = sectionStartInText + section.length();
         }
 
         return chunks;
     }
 
-    /**
-     * Split text by act/scene markers; if none found, treat whole text as one section.
-     */
     private List<String> splitByStructure(String text) {
         List<String> sections = new ArrayList<>();
-
-        // Try splitting by acts
         String[] actParts = ACT_PATTERN.split(text);
         Matcher actMatcher = ACT_PATTERN.matcher(text);
         List<String> actLabels = new ArrayList<>();
@@ -77,7 +84,6 @@ public class ChunkingService {
         }
 
         if (actLabels.size() > 1) {
-            // Re-assemble with act labels prepended
             for (int i = 0; i < actParts.length; i++) {
                 String part = actParts[i].trim();
                 if (part.isEmpty()) continue;
@@ -88,27 +94,25 @@ public class ChunkingService {
                 }
             }
         } else {
-            // No act markers, just use the whole text
             sections.add(text);
         }
 
         return sections;
     }
 
-    /**
-     * Fixed-size chunking with overlap (in characters, not tokens).
-     */
-    private List<String> fixedSizeChunk(String text, int size, int overlap) {
-        List<String> chunks = new ArrayList<>();
+    private record SubChunk(String text, int startOffset, int endOffset) {}
+
+    private List<SubChunk> fixedSizeChunk(String text, int size, int overlap) {
+        List<SubChunk> chunks = new ArrayList<>();
         if (text.length() <= size) {
-            chunks.add(text);
+            chunks.add(new SubChunk(text, 0, text.length()));
             return chunks;
         }
 
         int start = 0;
         while (start < text.length()) {
             int end = Math.min(start + size, text.length());
-            chunks.add(text.substring(start, end));
+            chunks.add(new SubChunk(text.substring(start, end), start, end));
             if (end >= text.length()) break;
             start = end - overlap;
         }
@@ -116,36 +120,28 @@ public class ChunkingService {
         return chunks;
     }
 
-    /**
-     * Extract character names mentioned in the chunk.
-     * For 《雷雨》, common character names are detected.
-     */
-    private String extractCharacterNames(String text) {
-        // Common character names in 雷雨 and other Chinese novels
+    private String buildEntityList(String text) {
         String[] knownCharacters = {
-            "周朴园", "蘩漪", "周萍", "周冲", "鲁侍萍", "鲁贵", "鲁大海", "四凤",
-            "繁漪",  // alternate writing
-            // Generic patterns that might be character names (single-surname dialogue markers)
+            "周朴园", "蘩漪", "周萍", "周冲", "鲁侍萍", "鲁贵", "鲁大海", "四凤", "繁漪"
         };
 
         List<String> found = new ArrayList<>();
         for (String name : knownCharacters) {
             if (text.contains(name)) {
-                found.add(name);
+                found.add("\"" + name + "\"");
             }
         }
 
-        return String.join(", ", found);
+        return "[" + String.join(",", found) + "]";
     }
 
-    public void setChunkSize(int chunkSize) {
-        this.chunkSize = chunkSize;
+    private String computeHash(String text) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            return "";
+        }
     }
-
-    public void setChunkOverlap(int chunkOverlap) {
-        this.chunkOverlap = chunkOverlap;
-    }
-
-    public int getChunkSize() { return chunkSize; }
-    public int getChunkOverlap() { return chunkOverlap; }
 }

@@ -1,15 +1,22 @@
 package com.rag.service;
 
-import com.rag.model.DocumentChunk;
-import com.rag.model.DocumentInfo;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.rag.entity.*;
+import com.rag.mapper.*;
+import com.rag.security.SecurityUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.List;
+import java.math.BigDecimal;
+import java.time.OffsetDateTime;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
+/**
+ * Orchestrator for the full RAG pipeline with persistent storage.
+ */
 @Service
 public class RagPipelineService {
 
@@ -18,122 +25,260 @@ public class RagPipelineService {
     private final DocumentService documentService;
     private final ChunkingService chunkingService;
     private final EmbeddingService embeddingService;
-    private final VectorStore vectorStore;
     private final RetrievalService retrievalService;
     private final RerankService rerankService;
     private final PromptService promptService;
     private final ChatService chatService;
+    private final IndexingJobService indexingJobService;
+    private final DocumentChunkMapper documentChunkMapper;
+    private final RagQueryTraceMapper traceMapper;
+    private final TraceEvidenceItemMapper evidenceItemMapper;
+    private final ChatMessageMapper chatMessageMapper;
+    private final UserSettingsMapper userSettingsMapper;
+    private final SecurityUtil securityUtil;
 
     public RagPipelineService(DocumentService documentService, ChunkingService chunkingService,
-                              EmbeddingService embeddingService, VectorStore vectorStore,
-                              RetrievalService retrievalService, RerankService rerankService,
-                              PromptService promptService, ChatService chatService) {
+                              EmbeddingService embeddingService, RetrievalService retrievalService,
+                              RerankService rerankService, PromptService promptService,
+                              ChatService chatService, IndexingJobService indexingJobService,
+                              DocumentChunkMapper documentChunkMapper,
+                              RagQueryTraceMapper traceMapper,
+                              TraceEvidenceItemMapper evidenceItemMapper,
+                              ChatMessageMapper chatMessageMapper,
+                              UserSettingsMapper userSettingsMapper,
+                              SecurityUtil securityUtil) {
         this.documentService = documentService;
         this.chunkingService = chunkingService;
         this.embeddingService = embeddingService;
-        this.vectorStore = vectorStore;
         this.retrievalService = retrievalService;
         this.rerankService = rerankService;
         this.promptService = promptService;
         this.chatService = chatService;
+        this.indexingJobService = indexingJobService;
+        this.documentChunkMapper = documentChunkMapper;
+        this.traceMapper = traceMapper;
+        this.evidenceItemMapper = evidenceItemMapper;
+        this.chatMessageMapper = chatMessageMapper;
+        this.userSettingsMapper = userSettingsMapper;
+        this.securityUtil = securityUtil;
     }
 
     /**
-     * Run the indexing pipeline (Ingestion -> Chunking -> Embedding -> Indexing).
-     * This is run asynchronously after document upload.
+     * Run the indexing pipeline asynchronously.
      */
-    public void indexDocument(String documentId) {
+    public IndexingJobEntity indexDocument(String documentId) {
+        DocumentEntity doc = documentService.getDocument(documentId);
+        IndexingJobEntity job = indexingJobService.createJob(documentId);
+
         CompletableFuture.runAsync(() -> {
             try {
-                DocumentInfo info = documentService.getDocumentInfo(documentId);
-                String text = documentService.getDocumentText(documentId);
-
+                String text = documentService.readDocumentText(doc);
                 if (text == null || text.isEmpty()) {
-                    info.setStatus("ERROR");
-                    info.setErrorMessage("Document text is empty");
-                    documentService.updateDocumentInfo(documentId, info);
+                    indexingJobService.markFailed(job, "Document text is empty");
+                    doc.setDocumentStatus("ERROR");
+                    doc.setErrorMessage("Document text is empty");
+                    documentService.updateDocument(doc);
                     return;
                 }
 
+                // Get user settings for chunking parameters
+                UserSettingsEntity settings = getUserSettings(doc.getUserId());
+                int chunkSize = settings != null ? settings.getChunkSize() : 500;
+                int chunkOverlap = settings != null ? settings.getChunkOverlap() : 100;
+                String embeddingModel = settings != null ? settings.getEmbeddingModel() : "Qwen/Qwen3-Embedding-0.6B";
+
                 // Step 1: Chunking
-                info.setStatus("CHUNKING");
-                documentService.updateDocumentInfo(documentId, info);
+                job.setCurrentStage("CHUNKING");
+                indexingJobService.updateJob(job);
+                doc.setDocumentStatus("INDEXING");
+                documentService.updateDocument(doc);
                 log.info("Chunking document {}", documentId);
 
-                List<DocumentChunk> chunks = chunkingService.chunkDocument(documentId, text);
-                info.setTotalChunks(chunks.size());
-                documentService.updateDocumentInfo(documentId, info);
+                List<DocumentChunkEntity> chunks = chunkingService.chunkDocument(
+                        documentId, text, chunkSize, chunkOverlap, embeddingModel);
+                job.setTotalChunks(chunks.size());
+                indexingJobService.updateJob(job);
                 log.info("Created {} chunks for document {}", chunks.size(), documentId);
 
                 // Step 2: Embedding
-                info.setStatus("EMBEDDING");
-                documentService.updateDocumentInfo(documentId, info);
+                job.setCurrentStage("EMBEDDING");
+                indexingJobService.updateJob(job);
                 log.info("Embedding {} chunks", chunks.size());
 
-                List<String> texts = chunks.stream().map(DocumentChunk::getContent).toList();
+                List<String> texts = chunks.stream().map(DocumentChunkEntity::getContentText).toList();
                 List<double[]> embeddings = embeddingService.embedBatch(texts);
 
+                // Step 3: Vector Persistence
+                job.setCurrentStage("PERSISTING");
+                indexingJobService.updateJob(job);
+
+                // Delete old chunks for this document first
+                documentChunkMapper.deleteByDocumentId(documentId);
+
                 for (int i = 0; i < chunks.size(); i++) {
-                    chunks.get(i).setEmbedding(embeddings.get(i));
-                    info.setProcessedChunks(i + 1);
-                    documentService.updateDocumentInfo(documentId, info);
+                    DocumentChunkEntity chunk = chunks.get(i);
+                    chunk.setEmbeddingVector(embeddings.get(i));
+                    String vectorStr = RetrievalService.toVectorString(embeddings.get(i));
+                    documentChunkMapper.insertWithVector(chunk, vectorStr);
+
+                    job.setProcessedChunks(i + 1);
+                    indexingJobService.updateJob(job);
                 }
 
-                // Step 3: Indexing
-                info.setStatus("INDEXING");
-                documentService.updateDocumentInfo(documentId, info);
-
-                for (DocumentChunk chunk : chunks) {
-                    vectorStore.addChunk(chunk);
-                }
-
-                info.setStatus("INDEXED");
-                documentService.updateDocumentInfo(documentId, info);
+                // Mark complete
+                indexingJobService.markCompleted(job, chunks.size());
+                doc.setDocumentStatus("INDEXED");
+                documentService.updateDocument(doc);
                 log.info("Document {} indexed successfully with {} chunks", documentId, chunks.size());
 
             } catch (Exception e) {
                 log.error("Indexing failed for document {}: {}", documentId, e.getMessage(), e);
-                DocumentInfo info = documentService.getDocumentInfo(documentId);
-                if (info != null) {
-                    info.setStatus("ERROR");
-                    info.setErrorMessage(e.getMessage());
-                    documentService.updateDocumentInfo(documentId, info);
-                }
+                indexingJobService.markFailed(job, e.getMessage());
+                doc.setDocumentStatus("ERROR");
+                doc.setErrorMessage(e.getMessage());
+                documentService.updateDocument(doc);
             }
         });
+
+        return job;
     }
 
     /**
-     * Run the query pipeline (User Query -> Query Embedding -> Top-K Retrieval -> Reranking -> Prompt Construction -> LLM Generation).
-     * Returns a streaming Flux of content tokens.
+     * Run the query pipeline with trace persistence.
+     * Returns a Flux of SSE event strings.
      */
-    public Flux<String> query(String userQuery) {
+    public QueryResult query(String sessionId, String userQuery, List<String> documentIds, String userId) {
+        long startTime = System.currentTimeMillis();
+
+        // Get user settings
+        UserSettingsEntity settings = getUserSettings(userId);
+        int topK = settings != null ? settings.getTopK() : 10;
+        int topN = settings != null ? settings.getTopN() : 5;
+
+        // Create trace record
+        RagQueryTraceEntity trace = new RagQueryTraceEntity();
+        trace.setId(UUID.randomUUID().toString());
+        trace.setSessionId(sessionId);
+        trace.setUserId(userId);
+        trace.setUserQuery(userQuery);
+        trace.setRetrievalTopK(topK);
+        trace.setRerankTopN(topN);
+        trace.setPromptVersion(PromptService.PROMPT_VERSION);
+        trace.setAnswerStatus("PROCESSING");
+        traceMapper.insert(trace);
+
         try {
-            // Step 1: Query Embedding + Top-K Retrieval
-            log.info("Retrieving relevant chunks for query: {}", userQuery);
-            List<DocumentChunk> retrievedChunks = retrievalService.retrieve(userQuery);
+            // Step 1: Retrieval
+            log.info("Retrieving chunks for query in session {}", sessionId);
+            List<DocumentChunkEntity> retrievedChunks;
+            if (documentIds != null && !documentIds.isEmpty()) {
+                retrievedChunks = retrievalService.retrieveByDocIds(userQuery, topK, documentIds);
+            } else {
+                retrievedChunks = retrievalService.retrieve(userQuery, topK, userId);
+            }
             log.info("Retrieved {} chunks", retrievedChunks.size());
 
             if (retrievedChunks.isEmpty()) {
-                return Flux.just("没有找到与您的问题相关的文档内容。请先上传并索引文档，然后再提问。");
+                trace.setAnswerStatus("NO_RESULTS");
+                trace.setAnswerText("No relevant documents found.");
+                trace.setLatencyMs((int) (System.currentTimeMillis() - startTime));
+                traceMapper.updateById(trace);
+
+                return new QueryResult(
+                        trace.getId(),
+                        Flux.just("No relevant documents found. Please upload and index documents first.")
+                );
             }
 
             // Step 2: Reranking
             log.info("Reranking {} chunks", retrievedChunks.size());
-            List<DocumentChunk> rerankedChunks = rerankService.rerank(userQuery, retrievedChunks);
-            log.info("Reranked to {} chunks", rerankedChunks.size());
+            List<RerankService.RerankResult> reranked = rerankService.rerank(userQuery, retrievedChunks, topN);
+            log.info("Reranked to {} evidence items", reranked.size());
 
-            // Step 3: Prompt Construction
+            // Persist evidence items
+            for (int i = 0; i < retrievedChunks.size(); i++) {
+                DocumentChunkEntity chunk = retrievedChunks.get(i);
+                TraceEvidenceItemEntity item = new TraceEvidenceItemEntity();
+                item.setId(UUID.randomUUID().toString());
+                item.setTraceId(trace.getId());
+                item.setDocumentId(chunk.getDocumentId());
+                item.setChunkId(chunk.getId());
+                item.setRetrievalRank(i + 1);
+                item.setRetrievalScore(BigDecimal.valueOf(0.0)); // Score comes from pgvector
+                item.setIsSelected(false);
+                evidenceItemMapper.insert(item);
+            }
+
+            // Mark selected evidence items with rerank scores
+            for (int i = 0; i < reranked.size(); i++) {
+                RerankService.RerankResult rr = reranked.get(i);
+                // Find the evidence item for this chunk and update it
+                LambdaQueryWrapper<TraceEvidenceItemEntity> q = new LambdaQueryWrapper<TraceEvidenceItemEntity>()
+                        .eq(TraceEvidenceItemEntity::getTraceId, trace.getId())
+                        .eq(TraceEvidenceItemEntity::getChunkId, rr.chunk().getId());
+                TraceEvidenceItemEntity evidenceItem = evidenceItemMapper.selectOne(q);
+                if (evidenceItem != null) {
+                    evidenceItem.setRerankRank(rr.rerankRank());
+                    evidenceItem.setRerankScore(rr.rerankScore());
+                    evidenceItem.setIsSelected(true);
+                    evidenceItem.setCitationNo(i + 1);
+                    evidenceItemMapper.updateById(evidenceItem);
+                }
+            }
+
+            // Step 3: Prompt Assembly
             String systemPrompt = promptService.buildSystemPrompt();
-            String userMessage = promptService.buildUserMessage(userQuery, rerankedChunks);
-            log.info("Constructed prompt with {} context chunks", rerankedChunks.size());
+            String userMessage = promptService.buildUserMessage(userQuery, reranked);
+            log.info("Constructed prompt with {} evidence items", reranked.size());
 
-            // Step 4: LLM Generation (streaming)
-            return chatService.streamChat(systemPrompt, userMessage);
+            // Step 4: LLM Streaming
+            StringBuilder fullAnswer = new StringBuilder();
+            String traceId = trace.getId();
+
+            Flux<String> stream = chatService.streamChat(systemPrompt, userMessage)
+                    .doOnNext(fullAnswer::append)
+                    .doOnComplete(() -> {
+                        // Persist final answer
+                        RagQueryTraceEntity t = traceMapper.selectById(traceId);
+                        if (t != null) {
+                            t.setAnswerStatus("COMPLETED");
+                            t.setAnswerText(fullAnswer.toString());
+                            t.setLatencyMs((int) (System.currentTimeMillis() - startTime));
+                            traceMapper.updateById(t);
+                        }
+                    })
+                    .doOnError(e -> {
+                        RagQueryTraceEntity t = traceMapper.selectById(traceId);
+                        if (t != null) {
+                            t.setAnswerStatus("FAILED");
+                            t.setErrorMessage(e.getMessage());
+                            t.setLatencyMs((int) (System.currentTimeMillis() - startTime));
+                            traceMapper.updateById(t);
+                        }
+                    });
+
+            return new QueryResult(traceId, stream);
 
         } catch (Exception e) {
             log.error("Query pipeline failed: {}", e.getMessage(), e);
-            return Flux.just("查询处理失败: " + e.getMessage());
+            trace.setAnswerStatus("FAILED");
+            trace.setErrorMessage(e.getMessage());
+            trace.setLatencyMs((int) (System.currentTimeMillis() - startTime));
+            traceMapper.updateById(trace);
+
+            return new QueryResult(
+                    trace.getId(),
+                    Flux.just("Query processing failed: " + e.getMessage())
+            );
         }
     }
+
+    private UserSettingsEntity getUserSettings(String userId) {
+        return userSettingsMapper.selectOne(
+                new LambdaQueryWrapper<UserSettingsEntity>()
+                        .eq(UserSettingsEntity::getUserId, userId)
+        );
+    }
+
+    public record QueryResult(String traceId, Flux<String> stream) {}
 }

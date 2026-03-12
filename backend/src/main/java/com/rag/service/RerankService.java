@@ -4,16 +4,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rag.config.ModelConfig;
 import com.rag.config.SiliconFlowConfig;
-import com.rag.model.DocumentChunk;
+import com.rag.entity.DocumentChunkEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * Reranking service. Now returns RerankResult objects with scores for trace persistence.
+ */
 @Service
 public class RerankService {
 
@@ -24,27 +27,29 @@ public class RerankService {
     private final ModelConfig modelConfig;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Value("${rag.top-n}")
-    private int topN;
-
     public RerankService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig, ModelConfig modelConfig) {
         this.webClient = siliconFlowWebClient;
         this.siliconFlowConfig = siliconFlowConfig;
         this.modelConfig = modelConfig;
     }
 
+    public record RerankResult(
+        DocumentChunkEntity chunk,
+        int rerankRank,
+        BigDecimal rerankScore
+    ) {}
+
     /**
-     * Rerank the retrieved chunks using SiliconFlow Rerank API.
-     * Returns the top-N most relevant chunks after reranking.
+     * Rerank the retrieved chunks and return results with scores.
      */
-    public List<DocumentChunk> rerank(String query, List<DocumentChunk> chunks) {
-        if (chunks.isEmpty()) return chunks;
+    public List<RerankResult> rerank(String query, List<DocumentChunkEntity> chunks, int topN) {
+        if (chunks.isEmpty()) return Collections.emptyList();
 
         String model = modelConfig.getSelectedModel("reranking");
 
         try {
             List<String> documents = chunks.stream()
-                    .map(DocumentChunk::getContent)
+                    .map(DocumentChunkEntity::getContentText)
                     .collect(Collectors.toList());
 
             Map<String, Object> request = new LinkedHashMap<>();
@@ -67,11 +72,19 @@ public class RerankService {
             JsonNode results = root.get("results");
 
             if (results != null && results.isArray()) {
-                List<DocumentChunk> reranked = new ArrayList<>();
+                List<RerankResult> reranked = new ArrayList<>();
+                int rank = 1;
                 for (JsonNode result : results) {
                     int index = result.get("index").asInt();
+                    double score = result.has("relevance_score")
+                            ? result.get("relevance_score").asDouble()
+                            : 0.0;
                     if (index < chunks.size()) {
-                        reranked.add(chunks.get(index));
+                        reranked.add(new RerankResult(
+                                chunks.get(index),
+                                rank++,
+                                BigDecimal.valueOf(score)
+                        ));
                     }
                 }
                 log.info("Reranked {} chunks to {} using model {}", chunks.size(), reranked.size(), model);
@@ -83,12 +96,10 @@ public class RerankService {
         }
 
         // Fallback: return top-N without reranking
-        return chunks.subList(0, Math.min(topN, chunks.size()));
+        List<RerankResult> fallback = new ArrayList<>();
+        for (int i = 0; i < Math.min(topN, chunks.size()); i++) {
+            fallback.add(new RerankResult(chunks.get(i), i + 1, BigDecimal.ZERO));
+        }
+        return fallback;
     }
-
-    public void setTopN(int topN) {
-        this.topN = topN;
-    }
-
-    public int getTopN() { return topN; }
 }

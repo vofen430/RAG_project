@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.rag.mapper.DocumentChunkMapper">
+
+    <insert id="insertWithVector">
+        INSERT INTO document_chunks (
+            id, document_id, chunk_index, section_label, content_text,
+            content_summary, start_offset, end_offset, entity_list,
+            embedding_model, embedding_vector, content_hash,
+            created_at, updated_at
+        ) VALUES (
+            #{entity.id}, #{entity.documentId}, #{entity.chunkIndex},
+            #{entity.sectionLabel}, #{entity.contentText},
+            #{entity.contentSummary}, #{entity.startOffset}, #{entity.endOffset},
+            #{entity.entityList}::jsonb, #{entity.embeddingModel},
+            #{vector}::vector, #{entity.contentHash},
+            now(), now()
+        )
+    </insert>
+
+    <select id="searchSimilar" resultType="com.rag.entity.DocumentChunkEntity">
+        SELECT dc.id, dc.document_id, dc.chunk_index, dc.section_label,
+               dc.content_text, dc.content_summary, dc.start_offset, dc.end_offset,
+               dc.entity_list, dc.embedding_model, dc.content_hash,
+               dc.created_at, dc.updated_at,
+               1 - (dc.embedding_vector &lt;=&gt; #{vector}::vector) AS similarity_score
+        FROM document_chunks dc
+        JOIN documents d ON dc.document_id = d.id
+        WHERE d.user_id = #{userId}
+          AND d.document_status = 'INDEXED'
+        ORDER BY dc.embedding_vector &lt;=&gt; #{vector}::vector
+        LIMIT #{topK}
+    </select>
+
+    <select id="searchSimilarByDocIds" resultType="com.rag.entity.DocumentChunkEntity">
+        SELECT dc.id, dc.document_id, dc.chunk_index, dc.section_label,
+               dc.content_text, dc.content_summary, dc.start_offset, dc.end_offset,
+               dc.entity_list, dc.embedding_model, dc.content_hash,
+               dc.created_at, dc.updated_at,
+               1 - (dc.embedding_vector &lt;=&gt; #{vector}::vector) AS similarity_score
+        FROM document_chunks dc
+        JOIN documents d ON dc.document_id = d.id
+        WHERE d.document_status = 'INDEXED'
+          AND dc.document_id IN
+            <foreach item="docId" collection="documentIds" open="(" separator="," close=")">
+                #{docId}
+            </foreach>
+        ORDER BY dc.embedding_vector &lt;=&gt; #{vector}::vector
+        LIMIT #{topK}
+    </select>
+
+    <delete id="deleteByDocumentId">
+        DELETE FROM document_chunks WHERE document_id = #{documentId}
+    </delete>
+
+</mapper>

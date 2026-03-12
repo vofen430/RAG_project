@@ -66,7 +66,14 @@ public class EmbeddingService {
                 JsonNode data = root.get("data");
 
                 if (data != null && data.isArray()) {
+                    // Sort by index to ensure correct order
+                    List<JsonNode> items = new ArrayList<>();
                     for (JsonNode item : data) {
+                        items.add(item);
+                    }
+                    items.sort(Comparator.comparingInt(a -> a.get("index").asInt()));
+
+                    for (JsonNode item : items) {
                         JsonNode embeddingNode = item.get("embedding");
                         double[] vec = new double[embeddingNode.size()];
                         for (int j = 0; j < embeddingNode.size(); j++) {
