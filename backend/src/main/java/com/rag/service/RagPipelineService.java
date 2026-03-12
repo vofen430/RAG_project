@@ -106,7 +106,7 @@ public class RagPipelineService {
                 log.info("Embedding {} chunks", chunks.size());
 
                 List<String> texts = chunks.stream().map(DocumentChunkEntity::getContentText).toList();
-                List<double[]> embeddings = embeddingService.embedBatch(texts);
+                List<double[]> embeddings = embeddingService.embedBatch(texts, embeddingModel);
 
                 // Step 3: Vector Persistence
                 job.setCurrentStage("PERSISTING");
@@ -169,12 +169,13 @@ public class RagPipelineService {
 
         try {
             // Step 1: Retrieval
+            String embeddingModel = settings != null ? settings.getEmbeddingModel() : "Qwen/Qwen3-Embedding-0.6B";
             log.info("Retrieving chunks for query in session {}", sessionId);
             List<DocumentChunkEntity> retrievedChunks;
             if (documentIds != null && !documentIds.isEmpty()) {
-                retrievedChunks = retrievalService.retrieveByDocIds(userQuery, topK, documentIds);
+                retrievedChunks = retrievalService.retrieveByDocIds(userQuery, topK, documentIds, embeddingModel);
             } else {
-                retrievedChunks = retrievalService.retrieve(userQuery, topK, userId);
+                retrievedChunks = retrievalService.retrieve(userQuery, topK, userId, embeddingModel);
             }
             log.info("Retrieved {} chunks", retrievedChunks.size());
 
@@ -192,7 +193,8 @@ public class RagPipelineService {
 
             // Step 2: Reranking
             log.info("Reranking {} chunks", retrievedChunks.size());
-            List<RerankService.RerankResult> reranked = rerankService.rerank(userQuery, retrievedChunks, topN);
+            String rerankModel = settings != null ? settings.getRerankModel() : "Qwen/Qwen3-Reranker-0.6B";
+            List<RerankService.RerankResult> reranked = rerankService.rerank(userQuery, retrievedChunks, topN, rerankModel);
             log.info("Reranked to {} evidence items", reranked.size());
 
             // Persist evidence items
@@ -235,7 +237,8 @@ public class RagPipelineService {
             StringBuilder fullAnswer = new StringBuilder();
             String traceId = trace.getId();
 
-            Flux<String> stream = chatService.streamChat(systemPrompt, userMessage)
+            String chatModel = settings != null ? settings.getChatModel() : "Qwen/Qwen3-8B";
+            Flux<String> stream = chatService.streamChat(systemPrompt, userMessage, chatModel)
                     .doOnNext(fullAnswer::append)
                     .doOnComplete(() -> {
                         // Persist final answer

@@ -2,7 +2,6 @@ package com.rag.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rag.config.ModelConfig;
 import com.rag.config.SiliconFlowConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,29 +18,29 @@ public class EmbeddingService {
 
     private final WebClient webClient;
     private final SiliconFlowConfig siliconFlowConfig;
-    private final ModelConfig modelConfig;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public EmbeddingService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig, ModelConfig modelConfig) {
+    public EmbeddingService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig) {
         this.webClient = siliconFlowWebClient;
         this.siliconFlowConfig = siliconFlowConfig;
-        this.modelConfig = modelConfig;
     }
 
     /**
-     * Embed a single text string. Returns the embedding vector.
+     * Embed a single text string using the specified model.
      */
-    public double[] embedText(String text) {
-        List<double[]> results = embedBatch(Collections.singletonList(text));
+    public double[] embedText(String text, String model) {
+        List<double[]> results = embedBatch(Collections.singletonList(text), model);
         return results.isEmpty() ? new double[0] : results.get(0);
     }
 
     /**
-     * Embed a batch of texts. Returns list of embedding vectors in same order.
+     * Embed a batch of texts using the specified model.
+     * SiliconFlow API: POST /embeddings
+     * Request: { model, input (string[]), encoding_format }
+     * Response: { data: [{ index, embedding: number[] }], usage }
      */
-    public List<double[]> embedBatch(List<String> texts) {
+    public List<double[]> embedBatch(List<String> texts, String model) {
         List<double[]> allEmbeddings = new ArrayList<>();
-        String model = modelConfig.getSelectedModel("embedding");
 
         for (int i = 0; i < texts.size(); i += BATCH_SIZE) {
             int end = Math.min(i + BATCH_SIZE, texts.size());

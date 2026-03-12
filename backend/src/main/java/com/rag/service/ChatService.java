@@ -2,7 +2,6 @@ package com.rag.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rag.config.ModelConfig;
 import com.rag.config.SiliconFlowConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +11,12 @@ import reactor.core.publisher.Flux;
 
 import java.util.*;
 
+/**
+ * Chat completion service using SiliconFlow POST /chat/completions API.
+ * Request: { model, messages[], stream, max_tokens, temperature, top_p, enable_thinking }
+ * Response (stream): SSE events with { choices: [{ delta: { content } }] }
+ * Stream terminates with data: [DONE]
+ */
 @Service
 public class ChatService {
 
@@ -19,22 +24,22 @@ public class ChatService {
 
     private final WebClient webClient;
     private final SiliconFlowConfig siliconFlowConfig;
-    private final ModelConfig modelConfig;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ChatService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig, ModelConfig modelConfig) {
+    public ChatService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig) {
         this.webClient = siliconFlowWebClient;
         this.siliconFlowConfig = siliconFlowConfig;
-        this.modelConfig = modelConfig;
     }
 
     /**
      * Call SiliconFlow Chat Completions API with streaming.
      * Returns a Flux of content tokens for SSE streaming.
+     *
+     * @param systemPrompt the system prompt
+     * @param userMessage  the user message (with evidence context)
+     * @param model        the chat model name from user settings
      */
-    public Flux<String> streamChat(String systemPrompt, String userMessage) {
-        String model = modelConfig.getSelectedModel("chat");
-
+    public Flux<String> streamChat(String systemPrompt, String userMessage, String model) {
         List<Map<String, String>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", systemPrompt));
         messages.add(Map.of("role", "user", "content", userMessage));

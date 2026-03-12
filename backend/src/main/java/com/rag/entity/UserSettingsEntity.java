@@ -1,6 +1,7 @@
 package com.rag.entity;
 
 import com.baomidou.mybatisplus.annotation.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.OffsetDateTime;
 
 @TableName("user_settings")
@@ -24,6 +25,9 @@ public class UserSettingsEntity {
     private Integer topK;
 
     private Integer topN;
+
+    @JsonIgnore
+    private String apiKey;
 
     @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;
@@ -51,6 +55,8 @@ public class UserSettingsEntity {
     public void setTopK(Integer topK) { this.topK = topK; }
     public Integer getTopN() { return topN; }
     public void setTopN(Integer topN) { this.topN = topN; }
+    public String getApiKey() { return apiKey; }
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(OffsetDateTime createdAt) { this.createdAt = createdAt; }
     public OffsetDateTime getUpdatedAt() { return updatedAt; }

@@ -19,11 +19,23 @@
     "selected": "Qwen/Qwen3-8B",
     "options": [
       { "id": "Qwen/Qwen3-8B", "label": "Qwen3 8B" },
+      { "id": "Qwen/Qwen3-14B", "label": "Qwen3 14B" },
       { "id": "Qwen/Qwen3-32B", "label": "Qwen3 32B" },
       { "id": "Qwen/Qwen3-235B-A22B", "label": "Qwen3 235B MoE" },
+      { "id": "Qwen/Qwen3-235B-A22B-Instruct-2507", "label": "Qwen3 235B Instruct 2507" },
+      { "id": "Qwen/Qwen3-30B-A3B-Instruct-2507", "label": "Qwen3 30B-A3B Instruct 2507" },
+      { "id": "Qwen/Qwen2.5-72B-Instruct", "label": "Qwen 2.5 72B Instruct" },
+      { "id": "Qwen/Qwen2.5-32B-Instruct", "label": "Qwen 2.5 32B Instruct" },
+      { "id": "Qwen/Qwen2.5-14B-Instruct", "label": "Qwen 2.5 14B Instruct" },
+      { "id": "Qwen/Qwen2.5-7B-Instruct", "label": "Qwen 2.5 7B Instruct" },
+      { "id": "Qwen/QwQ-32B", "label": "QwQ 32B (Reasoning)" },
       { "id": "deepseek-ai/DeepSeek-V3", "label": "DeepSeek V3" },
-      { "id": "deepseek-ai/DeepSeek-R1", "label": "DeepSeek R1" },
-      { "id": "Qwen/Qwen2.5-72B-Instruct", "label": "Qwen 2.5 72B" }
+      { "id": "deepseek-ai/DeepSeek-V3.1", "label": "DeepSeek V3.1" },
+      { "id": "deepseek-ai/DeepSeek-V3.2", "label": "DeepSeek V3.2" },
+      { "id": "deepseek-ai/DeepSeek-R1", "label": "DeepSeek R1 (Reasoning)" },
+      { "id": "THUDM/GLM-4-32B-0414", "label": "GLM-4 32B" },
+      { "id": "meta-llama/Meta-Llama-3.1-8B-Instruct", "label": "Llama 3.1 8B" },
+      { "id": "tencent/Hunyuan-A13B-Instruct", "label": "Hunyuan A13B" }
     ]
   }
 }

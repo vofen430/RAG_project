@@ -37,7 +37,8 @@ public class DocumentService {
                            @Value("${app.storage.documents-dir}") String documentsDir) {
         this.documentMapper = documentMapper;
         this.securityUtil = securityUtil;
-        this.storageRoot = storageRoot;
+        // Always use absolute path to avoid CWD-dependent storage paths
+        this.storageRoot = Paths.get(storageRoot).toAbsolutePath().toString();
         this.documentsDir = documentsDir;
     }
 
@@ -73,14 +74,14 @@ public class DocumentService {
         // Compute file hash
         String fileHash = computeHash(bytes);
 
-        // Store file on disk
+        // Store file on disk (always absolute path)
         String docId = UUID.randomUUID().toString();
         Path docDir = Paths.get(storageRoot, documentsDir, userId);
         Files.createDirectories(docDir);
         Path filePath = docDir.resolve(docId + "." + fileExt);
         Files.write(filePath, bytes);
 
-        // Persist metadata
+        // Persist metadata (absolute path)
         DocumentEntity entity = new DocumentEntity();
         entity.setId(docId);
         entity.setUserId(userId);
@@ -88,7 +89,7 @@ public class DocumentService {
         entity.setFileExt(fileExt);
         entity.setFileSizeBytes(file.getSize());
         entity.setFileHash(fileHash);
-        entity.setStoragePath(filePath.toString());
+        entity.setStoragePath(filePath.toAbsolutePath().toString());
         entity.setSourceEncoding(encoding);
         entity.setDocumentStatus("UPLOADED");
 
@@ -133,9 +134,17 @@ public class DocumentService {
 
     /**
      * Read document text from stored file on disk, detecting encoding.
+     * Handles both absolute and relative storage paths.
      */
     public String readDocumentText(DocumentEntity doc) throws IOException {
         Path filePath = Paths.get(doc.getStoragePath());
+        if (!Files.exists(filePath)) {
+            // Try resolving relative to storageRoot as fallback
+            filePath = Paths.get(storageRoot).resolve(doc.getStoragePath().replaceFirst("^\\./storage/", "")).normalize();
+        }
+        if (!Files.exists(filePath)) {
+            throw new BizException("FILE_NOT_FOUND", "Document file not found: " + doc.getStoragePath());
+        }
         byte[] bytes = Files.readAllBytes(filePath);
         return detectAndDecode(bytes);
     }

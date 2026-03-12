@@ -2,7 +2,6 @@ package com.rag.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rag.config.ModelConfig;
 import com.rag.config.SiliconFlowConfig;
 import com.rag.entity.DocumentChunkEntity;
 import org.slf4j.Logger;
@@ -15,7 +14,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Reranking service. Now returns RerankResult objects with scores for trace persistence.
+ * Reranking service using SiliconFlow POST /rerank API.
+ * Request: { model, query, documents: string[], top_n, return_documents }
+ * Response: { results: [{ index, relevance_score, document? }], tokens }
  */
 @Service
 public class RerankService {
@@ -24,13 +25,11 @@ public class RerankService {
 
     private final WebClient webClient;
     private final SiliconFlowConfig siliconFlowConfig;
-    private final ModelConfig modelConfig;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public RerankService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig, ModelConfig modelConfig) {
+    public RerankService(WebClient siliconFlowWebClient, SiliconFlowConfig siliconFlowConfig) {
         this.webClient = siliconFlowWebClient;
         this.siliconFlowConfig = siliconFlowConfig;
-        this.modelConfig = modelConfig;
     }
 
     public record RerankResult(
@@ -40,12 +39,10 @@ public class RerankService {
     ) {}
 
     /**
-     * Rerank the retrieved chunks and return results with scores.
+     * Rerank the retrieved chunks using the specified model and return results with scores.
      */
-    public List<RerankResult> rerank(String query, List<DocumentChunkEntity> chunks, int topN) {
+    public List<RerankResult> rerank(String query, List<DocumentChunkEntity> chunks, int topN, String model) {
         if (chunks.isEmpty()) return Collections.emptyList();
-
-        String model = modelConfig.getSelectedModel("reranking");
 
         try {
             List<String> documents = chunks.stream()

@@ -12,7 +12,6 @@ import java.util.stream.Collectors;
 
 /**
  * Retrieval service using pgvector for similarity search.
- * Replaces the old in-memory VectorStore approach.
  */
 @Service
 public class RetrievalService {
@@ -30,8 +29,8 @@ public class RetrievalService {
     /**
      * Retrieve top-K similar chunks from pgvector, scoped to user's documents.
      */
-    public List<DocumentChunkEntity> retrieve(String query, int topK, String userId) {
-        double[] queryEmbedding = embeddingService.embedText(query);
+    public List<DocumentChunkEntity> retrieve(String query, int topK, String userId, String embeddingModel) {
+        double[] queryEmbedding = embeddingService.embedText(query, embeddingModel);
         String vectorString = toVectorString(queryEmbedding);
         List<DocumentChunkEntity> results = documentChunkMapper.searchSimilar(vectorString, topK, userId);
         log.info("Retrieved {} chunks for user {} with topK={}", results.size(), userId, topK);
@@ -41,8 +40,8 @@ public class RetrievalService {
     /**
      * Retrieve top-K similar chunks scoped to specific document IDs.
      */
-    public List<DocumentChunkEntity> retrieveByDocIds(String query, int topK, List<String> documentIds) {
-        double[] queryEmbedding = embeddingService.embedText(query);
+    public List<DocumentChunkEntity> retrieveByDocIds(String query, int topK, List<String> documentIds, String embeddingModel) {
+        double[] queryEmbedding = embeddingService.embedText(query, embeddingModel);
         String vectorString = toVectorString(queryEmbedding);
         List<DocumentChunkEntity> results = documentChunkMapper.searchSimilarByDocIds(vectorString, topK, documentIds);
         log.info("Retrieved {} chunks from {} documents with topK={}", results.size(), documentIds.size(), topK);
