@@ -2,132 +2,258 @@
 
 ## 1. Purpose
 
-This SOP defines the standard steps for preparing a new local machine and deploying the RAG project for local use.
+This SOP defines the exact steps and commands to set up and deploy the Novel Character RAG system on a new local machine. All commands are tested and verified as of 2026-03-12.
 
-## 2. Required Software
+## 2. Prerequisites
 
-Install the following software on the new machine:
+### 2.1 Required Software
 
-- Git
-- Docker Engine
-- Docker Compose v2
-- Java 17
-- Node.js 24
-- npm 11
+| Software | Version | Purpose |
+|----------|---------|---------|
+| Git | 2.x+ | Version control |
+| Docker Engine | 20.x+ | Container runtime for PostgreSQL and Redis |
+| Docker Compose | v2+ | Multi-container orchestration |
+| Java (JDK) | 17 | Backend runtime (Spring Boot 3.2) |
+| Node.js | 20+ (LTS) | Frontend build and dev server |
+| npm | 9+ | Frontend package manager |
+| Maven Wrapper | Bundled | Backend build (included in repo as `./mvnw`) |
 
-## 3. Required Local Services
+### 2.2 Verify Installed Versions
 
-The new machine must run:
+```bash
+git --version          # git version 2.x.x
+docker --version       # Docker version 20+
+docker compose version # Docker Compose version v2.x.x
+java -version          # openjdk version "17.x.x"
+node -v                # v20.x.x or higher
+npm -v                 # 9.x.x or higher
+```
 
-- PostgreSQL 16 with pgvector
-- Redis 7
+## 3. Project Checkout
 
-## 4. Project Checkout SOP
+```bash
+# 1. Clone the repository
+git clone https://github.com/vofen430/RAG_project.git
+cd RAG_project
 
-Steps:
+# 2. Verify repository structure
+ls -la backend/ frontend/ docker-compose.yml docs/
+```
 
-1. Create a local workspace directory.
-2. Clone the project repository into the workspace directory.
-3. Switch to the required branch.
-4. Confirm the repository is clean before deployment work starts.
+## 4. Infrastructure Services
 
-## 5. Local Directory SOP
+### 4.1 Start PostgreSQL (with pgvector) and Redis
 
-Create the following directories on the local machine:
+```bash
+# Start both services in background
+docker compose up -d
 
-- Project workspace directory
-- Local document storage root
-- Local log directory
-- Local temporary directory
+# Verify services are healthy
+docker compose ps
+# Expected output:
+#   rag-postgres   running (healthy)
+#   rag-redis      running (healthy)
+```
 
-## 6. Environment File SOP
+### 4.2 Verify PostgreSQL
 
-Prepare local environment configuration with the following values:
+```bash
+docker exec rag-postgres psql -U rag_user -d rag_local -c "SELECT 1;"
+# Expected: 1 row returned
 
-- Backend port
-- PostgreSQL host
-- PostgreSQL port
-- PostgreSQL database name
-- PostgreSQL username
-- PostgreSQL password
-- Redis host
-- Redis port
-- JWT secret
-- Local storage root
-- Model provider API key
-- Frontend API base URL
+# Verify pgvector extension is available
+docker exec rag-postgres psql -U rag_user -d rag_local -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
 
-## 7. PostgreSQL Initialization SOP
+### 4.3 Verify Redis
 
-Steps:
+```bash
+docker exec rag-redis redis-cli ping
+# Expected: PONG
+```
 
-1. Start PostgreSQL locally.
-2. Create the `rag_local` database.
-3. Create the application database user.
-4. Grant the required database privileges.
-5. Enable the `vector` extension in `rag_local`.
+## 5. SiliconFlow API Key
 
-## 8. Redis Initialization SOP
+Obtain a SiliconFlow API key:
 
-Steps:
+1. Visit https://cloud.siliconflow.com/account/ak
+2. Register/login and create an API Key (format: `sk-xxxx...xxxx`)
+3. Keep it ready for the next step
 
-1. Start Redis locally.
-2. Verify Redis is reachable on the configured port.
+## 6. Backend Setup
 
-## 9. Backend Setup SOP
+### 6.1 Environment Variables
 
-Steps:
+Set the following environment variables before starting the backend:
 
-1. Go to the `backend` directory.
-2. Confirm Java 17 is active.
-3. Confirm backend environment variables are configured.
-4. Run Maven dependency resolution.
-5. Start the backend application.
-6. Verify that database migration completes successfully.
-7. Verify that the backend health endpoint returns success.
+```bash
+# Required
+export MODEL_PROVIDER_API_KEY="sk-your-siliconflow-api-key"
+export JWT_SECRET="replace-with-local-secret-key-at-least-32-chars-long"
 
-## 10. Frontend Setup SOP
+# Optional (defaults shown, override as needed)
+export SERVER_PORT=8080
+export DB_HOST=127.0.0.1
+export DB_PORT=5432
+export DB_NAME=rag_local
+export DB_USERNAME=rag_user
+export DB_PASSWORD=rag_password
+export REDIS_HOST=127.0.0.1
+export REDIS_PORT=6379
+export LOCAL_STORAGE_ROOT=./storage
+```
 
-Steps:
+### 6.2 Start the Backend
 
-1. Go to the `frontend` directory.
-2. Confirm Node.js 24 and npm 11 are active.
-3. Install frontend dependencies.
-4. Configure the frontend local environment.
-5. Start the frontend.
-6. Open the local frontend URL.
+```bash
+cd backend
 
-## 11. Local Deployment Verification SOP
+# Download dependencies and compile (first time takes ~2 minutes)
+./mvnw clean compile -q
 
-After startup, verify:
+# Start the application
+./mvnw spring-boot:run
+```
 
-1. Login page loads.
-2. User login succeeds.
-3. Document upload succeeds.
-4. Indexing starts successfully.
-5. Indexing completes successfully.
-6. Chat streaming works.
-7. Trace detail can be opened.
-8. Citation evidence can be opened.
+### 6.3 Verify Backend Startup
 
-## 12. Shutdown SOP
+Look for the following log output:
 
-Stop local services in the following order:
+```
+INFO  o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "1 - init schema"
+INFO  o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "2 - seed default user"
+INFO  o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "3 - add api key to settings"
+INFO  com.rag.NovelRagApplication : Started NovelRagApplication in X.XXX seconds
+```
 
-1. Frontend process
-2. Backend process
-3. Redis
-4. PostgreSQL
+### 6.4 Verify Backend Health
 
-## 13. Handoff Record SOP
+```bash
+curl -s http://localhost:8080/actuator/health | python3 -m json.tool
+# Expected: {"status":"UP","components":{...}}
+```
 
-Record the following after deployment:
+## 7. Frontend Setup
 
-- Machine name
-- Deployment date
-- Branch name
-- Backend startup result
-- Frontend startup result
-- PostgreSQL check result
-- Redis check result
-- Functional verification result
+### 7.1 Install Dependencies
+
+```bash
+cd frontend
+npm install
+```
+
+### 7.2 Start Development Server
+
+```bash
+npm run dev
+# Or with host binding for network access:
+npx vite --host 0.0.0.0 --port 5173
+```
+
+### 7.3 Verify Frontend
+
+Open http://localhost:5173 in a browser. You should see the login page.
+
+## 8. Deployment Verification Checklist
+
+After both backend and frontend are running, verify the following:
+
+### 8.1 Login
+
+```bash
+# Default demo account (seeded by migration V2)
+curl -s -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"demo-password"}' | python3 -m json.tool
+# Expected: {"code":"OK","data":{"accessToken":"eyJ...","refreshToken":"..."}}
+```
+
+### 8.2 Settings API
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"demo-password"}' | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['data']['accessToken'])")
+
+curl -s http://localhost:8080/api/settings \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+# Expected: settings with hasApiKey, model names, RAG parameters
+```
+
+### 8.3 Model Options API
+
+```bash
+curl -s http://localhost:8080/api/settings/models \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+# Expected: embedding/reranking/chat model options from SiliconFlow catalog
+```
+
+## 9. Default Configuration
+
+| Parameter | Default Value | Source |
+|-----------|--------------|--------|
+| Server Port | 8080 | `application.yml` |
+| PostgreSQL | 127.0.0.1:5432/rag_local | docker-compose |
+| Redis | 127.0.0.1:6379 | docker-compose |
+| Frontend | http://localhost:5173 | Vite dev server |
+| Embedding Model | Qwen/Qwen3-Embedding-0.6B | `models.json` |
+| Rerank Model | Qwen/Qwen3-Reranker-0.6B | `models.json` |
+| Chat Model | Qwen/Qwen3-8B | `models.json` |
+| Chunk Size | 500 chars | `application.yml` |
+| Chunk Overlap | 100 chars | `application.yml` |
+| Top-K Retrieval | 10 | `application.yml` |
+| Top-N Rerank | 5 | `application.yml` |
+| Demo Account | demo / demo-password | V2 seed migration |
+
+## 10. Directory Structure
+
+```
+RAG_project/
+├── backend/                  # Spring Boot 3.2 + MyBatis-Plus
+│   ├── src/main/java/com/rag/
+│   │   ├── config/           # SiliconFlowConfig, ModelConfig, SecurityConfig
+│   │   ├── controller/       # REST endpoints
+│   │   ├── entity/           # MyBatis-Plus entities
+│   │   ├── mapper/           # Database mappers
+│   │   ├── security/         # JWT auth, filters
+│   │   └── service/          # Business logic (RAG pipeline)
+│   └── src/main/resources/
+│       ├── application.yml   # Configuration
+│       ├── models.json       # SiliconFlow model catalog
+│       └── db/migration/     # Flyway SQL migrations (V1-V3)
+├── frontend/                 # Vue.js 3 + Vite
+│   └── src/
+│       ├── api/index.js      # Axios API client
+│       ├── views/            # Page components
+│       └── style.css         # Global styles
+├── storage/                  # Document file storage (auto-created)
+│   └── documents/{userId}/   # Uploaded files
+├── docker-compose.yml        # PostgreSQL + Redis
+├── siliconflow/              # API documentation
+└── docs/                     # Project documentation
+```
+
+## 11. Shutdown
+
+```bash
+# 1. Stop frontend (Ctrl+C or kill the Vite process)
+# 2. Stop backend (Ctrl+C or kill the Spring Boot process)
+# 3. Stop infrastructure services
+docker compose down
+
+# To also remove data volumes (DESTRUCTIVE):
+# docker compose down -v
+```
+
+## 12. Troubleshooting
+
+| Issue | Solution |
+|-------|---------|
+| Port 5432 in use | `docker compose down` then `docker compose up -d` |
+| Port 8080 in use | Set `SERVER_PORT=8081` (or kill the conflicting process) |
+| `pgvector` extension not found | The `pgvector/pgvector:pg16` image includes it by default |
+| Flyway migration fails | Check DB connection; ensure `rag_local` database exists |
+| API key error (401) | Set `MODEL_PROVIDER_API_KEY` env var or configure via Settings UI |
+| File upload fails | Check `LOCAL_STORAGE_ROOT` permissions |
+| GBK encoding garbled | Backend auto-detects GBK; ensure file is not double-converted |
