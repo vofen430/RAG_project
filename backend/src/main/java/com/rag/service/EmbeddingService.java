@@ -30,7 +30,10 @@ public class EmbeddingService {
      */
     public double[] embedText(String text, String model) {
         List<double[]> results = embedBatch(Collections.singletonList(text), model);
-        return results.isEmpty() ? new double[0] : results.get(0);
+        if (results.isEmpty() || results.get(0).length == 0) {
+            throw new RuntimeException("Embedding failed: API returned no vectors. Please check your API Key and model configuration.");
+        }
+        return results.get(0);
     }
 
     /**
@@ -86,10 +89,7 @@ public class EmbeddingService {
 
             } catch (Exception e) {
                 log.error("Embedding failed for batch {}-{}: {}", i, end, e.getMessage());
-                // Fill with empty vectors for failed batch
-                for (int j = 0; j < batch.size(); j++) {
-                    allEmbeddings.add(new double[0]);
-                }
+                throw new RuntimeException("Embedding API call failed: " + e.getMessage(), e);
             }
         }
 

@@ -13,6 +13,7 @@ import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import reactor.core.publisher.Flux;
@@ -64,8 +65,11 @@ public class ChatController {
     public static class CreateSessionRequest {
         @NotBlank(message = "Title is required")
         private String title;
+        private List<String> documentIds;
         public String getTitle() { return title; }
         public void setTitle(String title) { this.title = title; }
+        public List<String> getDocumentIds() { return documentIds; }
+        public void setDocumentIds(List<String> documentIds) { this.documentIds = documentIds; }
     }
 
     public static class StreamQueryRequest {
@@ -101,19 +105,42 @@ public class ChatController {
         session.setSessionStatus("ACTIVE");
         chatSessionMapper.insert(session);
 
-        log.info("Chat session created: {}", session.getId());
+        // If documentIds provided, store them for this session
+        if (request.getDocumentIds() != null && !request.getDocumentIds().isEmpty()) {
+            for (String docId : request.getDocumentIds()) {
+                chatSessionMapper.insertSessionDocument(session.getId(), docId);
+            }
+        }
+
+        log.info("Chat session created: {} with {} documents", session.getId(),
+                 request.getDocumentIds() != null ? request.getDocumentIds().size() : 0);
         return ApiResponse.ok(session);
     }
 
     @GetMapping("/sessions")
-    public ApiResponse<List<ChatSessionEntity>> listSessions() {
+    public ApiResponse<List<Map<String, Object>>> listSessions() {
         String userId = securityUtil.getCurrentUserId();
         List<ChatSessionEntity> sessions = chatSessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSessionEntity>()
                         .eq(ChatSessionEntity::getUserId, userId)
                         .orderByDesc(ChatSessionEntity::getCreatedAt)
         );
-        return ApiResponse.ok(sessions);
+
+        // Enrich with document IDs
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ChatSessionEntity s : sessions) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", s.getId());
+            item.put("userId", s.getUserId());
+            item.put("title", s.getTitle());
+            item.put("sessionStatus", s.getSessionStatus());
+            item.put("createdAt", s.getCreatedAt());
+            item.put("updatedAt", s.getUpdatedAt());
+            List<String> docIds = chatSessionMapper.selectSessionDocumentIds(s.getId());
+            item.put("documentIds", docIds != null ? docIds : List.of());
+            result.add(item);
+        }
+        return ApiResponse.ok(result);
     }
 
     @GetMapping("/sessions/{sessionId}/messages")
@@ -136,10 +163,16 @@ public class ChatController {
 
     @PostMapping(value = "/sessions/{sessionId}/query/stream",
                  produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> streamQuery(@PathVariable String sessionId,
+    public Flux<ServerSentEvent<String>> streamQuery(@PathVariable String sessionId,
                                     @Valid @RequestBody StreamQueryRequest request) {
         verifySessionOwnership(sessionId);
         String userId = securityUtil.getCurrentUserId();
+
+        // Determine documentIds: prefer request-level, then fall back to session-level
+        List<String> documentIds = request.getDocumentIds();
+        if (documentIds == null || documentIds.isEmpty()) {
+            documentIds = chatSessionMapper.selectSessionDocumentIds(sessionId);
+        }
 
         // Save user message
         int nextIndex = getNextMessageIndex(sessionId);
@@ -153,7 +186,7 @@ public class ChatController {
 
         // Run query pipeline
         RagPipelineService.QueryResult result = ragPipelineService.query(
-                sessionId, request.getQuery(), request.getDocumentIds(), userId);
+                sessionId, request.getQuery(), documentIds, userId);
 
         String traceId = result.traceId();
         StringBuilder fullAnswer = new StringBuilder();
@@ -163,9 +196,15 @@ public class ChatController {
                     fullAnswer.append(token);
                     try {
                         Map<String, String> payload = Map.of("traceId", traceId, "content", token);
-                        return "event: token\ndata: " + objectMapper.writeValueAsString(payload) + "\n\n";
+                        return ServerSentEvent.<String>builder()
+                                .event("token")
+                                .data(objectMapper.writeValueAsString(payload))
+                                .build();
                     } catch (Exception e) {
-                        return "event: token\ndata: " + token + "\n\n";
+                        return ServerSentEvent.<String>builder()
+                                .event("token")
+                                .data(token)
+                                .build();
                     }
                 })
                 .concatWith(Flux.defer(() -> {
@@ -193,18 +232,30 @@ public class ChatController {
                         payload.put("messageId", assistantMsg.getId());
                         payload.put("citationCount", citationCount);
                         payload.put("finishedAt", OffsetDateTime.now().toString());
-                        return Flux.just("event: complete\ndata: " + objectMapper.writeValueAsString(payload) + "\n\n");
+                        return Flux.just(ServerSentEvent.<String>builder()
+                                .event("complete")
+                                .data(objectMapper.writeValueAsString(payload))
+                                .build());
                     } catch (Exception e) {
-                        return Flux.just("event: complete\ndata: {}\n\n");
+                        return Flux.just(ServerSentEvent.<String>builder()
+                                .event("complete")
+                                .data("{}")
+                                .build());
                     }
                 }))
                 .onErrorResume(e -> {
                     log.error("Streaming error: {}", e.getMessage());
                     try {
                         Map<String, String> errPayload = Map.of("traceId", traceId, "error", e.getMessage());
-                        return Flux.just("event: error\ndata: " + objectMapper.writeValueAsString(errPayload) + "\n\n");
+                        return Flux.just(ServerSentEvent.<String>builder()
+                                .event("error")
+                                .data(objectMapper.writeValueAsString(errPayload))
+                                .build());
                     } catch (Exception ex) {
-                        return Flux.just("event: error\ndata: {\"error\":\"" + e.getMessage() + "\"}\n\n");
+                        return Flux.just(ServerSentEvent.<String>builder()
+                                .event("error")
+                                .data("{\"error\":\"" + e.getMessage() + "\"}")
+                                .build());
                     }
                 });
     }

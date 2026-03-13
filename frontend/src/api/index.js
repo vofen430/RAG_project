@@ -53,8 +53,8 @@ export const indexDocument = (id) => api.post(`/documents/${id}/index`)
 export const getLatestJob = (id) => api.get(`/documents/${id}/jobs/latest`)
 
 // ─── Chat Sessions ───────────────────────────
-export const createSession = (title) =>
-  api.post('/chat/sessions', { title })
+export const createSession = (title, documentIds) =>
+  api.post('/chat/sessions', { title, documentIds })
 
 export const listSessions = () => api.get('/chat/sessions')
 
@@ -85,7 +85,8 @@ export async function streamQuery(sessionId, query, documentIds, callbacks) {
         window.location.href = '/login'
         return
       }
-      throw new Error(`HTTP ${response.status}`)
+      const errText = await response.text()
+      throw new Error(`HTTP ${response.status}: ${errText}`)
     }
 
     const reader = response.body.getReader()
@@ -103,15 +104,16 @@ export async function streamQuery(sessionId, query, documentIds, callbacks) {
       buffer = parts.pop() // keep incomplete
 
       for (const part of parts) {
+        if (!part.trim()) continue
         const lines = part.split('\n')
         let eventType = 'message'
         let data = ''
 
         for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7).trim()
-          } else if (line.startsWith('data: ')) {
-            data = line.slice(6)
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            data = line.slice(5).trim()
           }
         }
 
@@ -135,6 +137,25 @@ export async function streamQuery(sessionId, query, documentIds, callbacks) {
         }
       }
     }
+
+    // Process any remaining buffer
+    if (buffer.trim()) {
+      const lines = buffer.split('\n')
+      let eventType = 'message'
+      let data = ''
+      for (const line of lines) {
+        if (line.startsWith('event:')) eventType = line.slice(6).trim()
+        else if (line.startsWith('data:')) data = line.slice(5).trim()
+      }
+      if (data) {
+        try {
+          const payload = JSON.parse(data)
+          if (eventType === 'complete') onComplete(payload)
+          else if (eventType === 'error') onError(payload.error || 'Unknown error')
+          else if (eventType === 'token') onToken(payload.content || '', payload.traceId)
+        } catch { /* ignore */ }
+      }
+    }
   } catch (err) {
     onError(err.message || 'Stream connection failed')
   }
@@ -155,4 +176,3 @@ export const getModelOptions = () => api.get('/settings/models')
 
 // ─── Health ──────────────────────────────────
 export const getHealth = () => api.get('/health')
-
